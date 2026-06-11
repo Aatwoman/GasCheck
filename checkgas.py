@@ -161,12 +161,14 @@ def load_file(uploaded_file) -> pd.DataFrame:
     return df
 
 
-def compute_working_time(df: pd.DataFrame) -> timedelta | None:
-    """Working time = last − first timestamp where a Point label is present."""
+def compute_working_time(df: pd.DataFrame) -> tuple[timedelta, str] | tuple[None, None]:
+    """Working time = Point-tagged span if available, else full file span."""
     point_rows = df[df["Point"].notna()]
-    if len(point_rows) < 2:
-        return None
-    return point_rows["timestamp"].max() - point_rows["timestamp"].min()
+    if len(point_rows) >= 2:
+        return point_rows["timestamp"].max() - point_rows["timestamp"].min(), "Point-tagged span"
+    if len(df) >= 2:
+        return df["timestamp"].max() - df["timestamp"].min(), "Full file span"
+    return None, None
 
 
 # CH₄ filter ranges by measurement point:
@@ -514,7 +516,7 @@ with tab_overview:
     st.subheader("Working Time Summary")
     wt_cols = st.columns(max(len(all_dfs), 1))
     for i, (df_i, fname) in enumerate(zip(all_dfs, file_names)):
-        wt = compute_working_time(df_i)
+        wt, wt_basis = compute_working_time(df_i)
         with wt_cols[i % len(wt_cols)]:
             if wt:
                 h, rem = divmod(int(wt.total_seconds()), 3600)
@@ -522,10 +524,10 @@ with tab_overview:
                 st.metric(
                     label=fname,
                     value=f"{h:02d}h {m:02d}m {s:02d}s",
-                    help="Time span from first to last tagged measurement (Point 1/2/3)",
+                    help=wt_basis,
                 )
             else:
-                st.metric(label=fname, value="No Point data")
+                st.metric(label=fname, value="No data")
 
     st.divider()
 
