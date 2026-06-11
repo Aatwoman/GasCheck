@@ -169,23 +169,38 @@ def compute_working_time(df: pd.DataFrame) -> timedelta | None:
     return point_rows["timestamp"].max() - point_rows["timestamp"].min()
 
 
-# Point 1/3 rule: CH4 [%] mean uses only readings >= this threshold
-MIN_CH4_FOR_AVG = 80.0
+# CH₄ filter ranges by measurement point:
+#   Point 2 (sweet gas / raw side)         → avg uses 0 – 65 %
+#   Points 1 & 3 (before/after purifier)   → avg uses 80 – 100 %
+CH4_RAW_MAX  = 65.0   # Point 2: raw CH4 avg uses readings 0–65%
+CH4_PURE_MIN = 80.0   # Points 1 & 3: pure CH4 avg uses readings 80–100%
 
-# Point 2 rule: optimal raw CH4% band shown in Point Compare section
-CH4_OPT_LOW  = 55.0
-CH4_OPT_HIGH = 65.0  # max CH4% in compare section
+# Opt band shown in Point Compare box plot (Point 2 raw CH4 range)
+CH4_OPT_LOW  = 0.0
+CH4_OPT_HIGH = 65.0
 
 
 def summary_stats(df: pd.DataFrame, point_filter: str | None) -> dict:
     """Return a dict of key stats for a given point (or all data if None).
 
-    Point 1/3 rule: CH4 [%] mean is computed using only readings >= 80%.
+    CH₄ [%] mean is range-filtered depending on which point is selected:
+      • Point 2 (sweet gas / raw)      → avg uses readings 0–65%
+      • Point 1 / Point 3 / all data   → avg uses readings 80–100%
     All other statistics (min/max/std/count) use the full dataset.
     """
     sub = df if point_filter is None else df[df["Point"] == point_filter]
     if sub.empty:
         return {}
+
+    # Determine which CH4 range applies for this point
+    if point_filter == "Point 2":
+        ch4_mask = lambda v: (v >= 0) & (v <= CH4_RAW_MAX)
+        ch4_note = f"0–{CH4_RAW_MAX:.0f}%"
+    else:
+        # Point 1, Point 3, or combined (None) → purified range
+        ch4_mask = lambda v: (v >= CH4_PURE_MIN) & (v <= 100)
+        ch4_note = f"{CH4_PURE_MIN:.0f}–100%"
+
     stats = {}
     for col in [
         "CH4 [%]", "CO2 [%]", "O2 [%]",
@@ -196,14 +211,19 @@ def summary_stats(df: pd.DataFrame, point_filter: str | None) -> dict:
     ]:
         vals = sub[col].dropna()
         if len(vals):
-            # Apply 80% floor for mean on CH4 only (Point 1/3 rule)
-            vals_for_mean = vals[vals >= MIN_CH4_FOR_AVG] if col == "CH4 [%]" else vals
+            if col == "CH4 [%]":
+                vals_for_mean = vals[ch4_mask(vals)]
+                note = f"Avg uses {ch4_note} readings only"
+            else:
+                vals_for_mean = vals
+                note = ""
             stats[col] = {
                 "mean": vals_for_mean.mean() if not vals_for_mean.empty else float("nan"),
                 "min": vals.min(),
                 "max": vals.max(),
                 "std": vals.std(),
                 "count": len(vals),
+                "note": note,
             }
     return stats
 
@@ -356,7 +376,6 @@ def metric_row(label: str, val: float | str, unit: str = "", delta: float | None
 def render_stats_table(stats: dict):
     rows = []
     for param, s in stats.items():
-        note = f"Avg uses readings \u2265{MIN_CH4_FOR_AVG:.0f}% only" if param == "CH4 [%]" else ""
         rows.append(
             {
                 "Parameter": param,
@@ -365,13 +384,14 @@ def render_stats_table(stats: dict):
                 "Max": f"{s['max']:.4g}",
                 "Std Dev": f"{s['std']:.4g}",
                 "N": s["count"],
-                "Note": note,
+                "Note": s.get("note", ""),
             }
         )
     if rows:
         st.caption(
-            f"\u26a0 CH4 [%] mean includes only readings \u2265 {MIN_CH4_FOR_AVG:.0f}% "
-            "(low/zero readings excluded per Point 1 rule)."
+            f"\u26a0 CH4 [%] mean is range-filtered: "
+            f"Point 2 uses 0\u2013{CH4_RAW_MAX:.0f}% readings; "
+            f"Points 1 & 3 use {CH4_PURE_MIN:.0f}\u2013100% readings."
         )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
