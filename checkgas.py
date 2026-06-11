@@ -66,6 +66,13 @@ PARAM_GROUPS = {
     ],
 }
 
+# CH4 thresholds for average calculations (applied per point)
+CH4_AVG_THRESHOLDS = {
+    "Point 1": {"min": 80.0},   # only rows with CH4 >= 80% count toward averages
+    "Point 2": {"max": 65.0},   # only rows with CH4 <= 65% count toward averages
+    "Point 3": {"min": 80.0},   # only rows with CH4 >= 80% count toward averages
+}
+
 # ─────────────────────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────────────────────
@@ -169,7 +176,24 @@ def compute_working_time(df: pd.DataFrame) -> timedelta | None:
     return point_rows["timestamp"].max() - point_rows["timestamp"].min()
 
 
-def summary_stats(df: pd.DataFrame, point_filter: str | None) -> dict:
+def apply_ch4_threshold(df: pd.DataFrame, point: str | None) -> pd.DataFrame:
+    """
+    Filter rows to those meeting the CH4 threshold for average calculations.
+    Only applied when a specific point is given and that point has a defined threshold.
+    Returns the dataframe unchanged when point is None or has no threshold.
+    """
+    if point is None or point not in CH4_AVG_THRESHOLDS:
+        return df
+    thresh = CH4_AVG_THRESHOLDS[point]
+    mask = pd.Series([True] * len(df), index=df.index)
+    if "min" in thresh:
+        mask &= df["CH4 [%]"].ge(thresh["min"]) | df["CH4 [%]"].isna()
+    if "max" in thresh:
+        mask &= df["CH4 [%]"].le(thresh["max"]) | df["CH4 [%]"].isna()
+    return df[mask]
+
+
+
     """Return a dict of key stats for a given point (or all data if None)."""
     sub = df if point_filter is None else df[df["Point"] == point_filter]
     if sub.empty:
