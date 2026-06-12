@@ -119,18 +119,16 @@ def load_file(uploaded_file) -> pd.DataFrame:
 
     # ── Numeric coercion ─────────────────────────────────────
     numeric_cols = [c for c in RAW_COLS if c not in ("timestamp", "Point", "Alarm")]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
 
     # ── Point label normalisation ─────────────────────────────
-    df["Point"] = df["Point"].astype(str).str.strip().replace("nan", pd.NA)
-    df["Point"] = df["Point"].where(
-        df["Point"].isin(["Point 1", "Point 2", "Point 3"]), other=pd.NA
-    )
+    point_clean = df["Point"].astype(str).str.strip()
+    df["Point"] = point_clean.where(point_clean.isin(["Point 1", "Point 2", "Point 3"]), other=pd.NA)
 
     # ── Alarm normalisation ───────────────────────────────────
-    df["Alarm"] = df["Alarm"].astype(str).str.strip().replace("nan", pd.NA)
-    df["Has Alarm"] = df["Alarm"].notna() & (df["Alarm"] != "")
+    alarm_clean = df["Alarm"].astype(str).str.strip()
+    df["Alarm"] = alarm_clean.where(~alarm_clean.isin(["nan", ""]), other=pd.NA)
+    df["Has Alarm"] = df["Alarm"].notna()
 
     # ── Derived parameters ────────────────────────────────────
     # CH4:CO2 ratio — useful purity indicator
@@ -151,7 +149,7 @@ def load_file(uploaded_file) -> pd.DataFrame:
     ).round(2)
 
     # Cumulative flow (trapezoidal integration over time in minutes)
-    dt_min = df["timestamp"].diff().dt.total_seconds().fillna(0) / 60.0
+    dt_min = df["timestamp"].diff().dt.total_seconds().div(60).fillna(0)
     df["Cumulative Flow [l]"] = (df["Flow [l/min]"].fillna(0) * dt_min).cumsum().round(2)
 
     # ── Source metadata ───────────────────────────────────────
@@ -512,22 +510,36 @@ tab_overview, tab_gas, tab_energy, tab_flow, tab_derived, tab_points, tab_alarms
 with tab_overview:
     st.header("Overview")
 
-    # ── Working time per file ───────────────────────────────
+    # ── Working time table (date × point) ──────────────────
     st.subheader("Working Time Summary")
-    wt_cols = st.columns(max(len(all_dfs), 1))
-    for i, (df_i, fname) in enumerate(zip(all_dfs, file_names)):
-        wt, wt_basis = compute_working_time(df_i)
-        with wt_cols[i % len(wt_cols)]:
-            if wt:
-                h, rem = divmod(int(wt.total_seconds()), 3600)
-                m, s = divmod(rem, 60)
-                st.metric(
-                    label=fname,
-                    value=f"{h:02d}h {m:02d}m {s:02d}s",
-                    help=wt_basis,
-                )
-            else:
-                st.metric(label=fname, value="No data")
+
+    def _fmt_td(td) -> str:
+        if pd.isna(td) or td is None:
+            return "—"
+        total_s = int(td.total_seconds())
+        h, rem = divmod(total_s, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}h {m:02d}m {s:02d}s"
+
+    wt_rows = []
+    for df_i, fname in zip(all_dfs, file_names):
+        for date_val, day_df in df_i.groupby("date"):
+            row = {"Date": str(date_val), "File": fname}
+            for pt in ["Point 1", "Point 2", "Point 3"]:
+                pt_sub = day_df[day_df["Point"] == pt]
+                if len(pt_sub) >= 2:
+                    td = pt_sub["timestamp"].max() - pt_sub["timestamp"].min()
+                    row[pt] = _fmt_td(td)
+                else:
+                    row[pt] = "—"
+            wt, basis = compute_working_time(day_df)
+            row["Total (day)"] = _fmt_td(wt)
+            row["Basis"] = basis or "—"
+            wt_rows.append(row)
+
+    if wt_rows:
+        wt_df = pd.DataFrame(wt_rows)[["Date", "File", "Point 1", "Point 2", "Point 3", "Total (day)", "Basis"]]
+        st.dataframe(wt_df, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -566,7 +578,7 @@ with tab_overview:
     st.subheader("Files Loaded")
     summary_rows = []
     for df_i, fname in zip(all_dfs, file_names):
-        wt = compute_working_time(df_i)
+        wt, _ = compute_working_time(df_i)
         wt_str = (
             str(wt).split(".")[0] if wt else "—"
         )
